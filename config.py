@@ -1,0 +1,5 @@
+BOT_TOKEN = "8420863274:AAFV5g5PX1bqipVrEc54IX1VMZMuo2fxxm4"
+DATA_PATH = "data"
+QUESTIONS_FILE = "data/questions.json"
+SETTINGS_FILE = "data/settings.json"
+USERS_FILE = "data/users.json"
