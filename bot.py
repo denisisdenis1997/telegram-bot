@@ -43,7 +43,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     user = update.message.from_user
     # Убираем - из начала ответа для проверки
-    user_answer = update.message.text[1:].strip()  # ← Убираем первый символ (-) и лишние пробелы
+    user_answer = update.message.text[1:].strip()
     
     # Проверяем, что после - есть текст
     if not user_answer:
@@ -51,13 +51,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("💡 Напиши ответ после дефиса!\nПример: - париж")
         return
     
-    print(f"🔍 Проверяем ответ от {user.first_name}: '{user_answer}' (оригинал: '{update.message.text}')")
+    print(f"🔍 Проверяем ответ от {user.first_name}: '{user_answer}'")
     
     # Сохраняем информацию о пользователе
     save_user_info(update)
     
     # Проверяем ответ
-    is_correct, reason = quiz_manager.check_answer(user.id, user_answer)
+    is_correct, reason = quiz_manager.check_answer(user.id, user_answer, context, update.effective_chat.id)
     
     print(f"📊 Результат проверки: correct={is_correct}, reason={reason}")
     
@@ -69,17 +69,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if first_responder_info:
             responder_name = first_responder_info.get('first_name', 'другой участник')
-            # Случайное разнообразное сообщение
-            import random
-            messages = [
-                f"❌ Опоздал! На этот вопрос уже ответил {responder_name}!",
-                f"❌ {responder_name} был быстрее! Ответ уже дан!",
-                f"❌ Увы! {responder_name} уже дал правильный ответ!",
-                f"❌ {responder_name} оказался проворнее! Ответ уже есть!",
-                f"❌ Этот вопрос уже покорился {responder_name}!",
-            ]
-            selected_message = random.choice(messages)
-            await update.message.reply_text(selected_message)
+            await update.message.reply_text(f"❌ Опоздал! На этот вопрос уже ответил {responder_name}!")
         else:
             await update.message.reply_text("❌ На этот вопрос уже ответили!")
             
@@ -112,16 +102,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Используй /leaderboard чтобы посмотреть таблицу лидеров!"
         )
     else:
-        print(f"❌ Неправильный ответ от {user.first_name}")
-        import random
-        wrong_messages = [
-            "❌ Неправильно! Попробуй еще раз!",
-            "❌ Мимо! Думай лучше!",
-            "❌ Не угадал! Следующая попытка?",
-            "❌ Ошибочка! Попробуй еще!",
-            "❌ Неверно! Не сдавайся!",
-        ]
-        await update.message.reply_text(random.choice(wrong_messages))
+        # НИКАКОЙ РЕАКЦИИ НА НЕПРАВИЛЬНЫЕ ОТВЕТЫ - УБИРАЕМ СПАМ
+        print(f"❌ Неправильный ответ от {user.first_name} - игнорируем")
+        # НЕ отправляем сообщение - просто игнорируем
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /start"""
     save_user_info(update)
@@ -137,18 +121,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = f"""
 🤖 Добро пожаловать в Карась-викторину!
 
-🕐 Карась-Викторины запускаются автоматически каждые 4 часа!
+🕐 Карась-Викторины запускаются автоматически каждый день в 12:00!
 
 🎯 Доступные команды:
 /start - показать это сообщение
 /leaderboard - таблица лидеров
 /question - показать текущий вопрос
 /schedule - показать расписание
+/profile - мой профиль и уровень
+/achievements - мои достижения
 /next_quiz - когда следующая Карась-викторина
-
+/reset_stats - сброс статистики (только для админов)
 
 💡 Просто напиши ответ в чат, когда увидишь вопрос!
 Первый правильный ответ = 1 Карась-балл!
+
+🏆 Накопи очки чтобы повысить уровень и получить достижения!
     """
     await update.message.reply_text(welcome_text)
 
@@ -166,7 +154,9 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for i, (user_id, user_data) in enumerate(leaders, 1):
         name = user_data.get('username') or user_data.get('first_name') or f"User{user_id}"
         score = user_data.get('score', 0)
-        leaderboard_text += f"{i}. {name}: {score} Карась-баллов\n"
+        level = quiz_manager.get_user_level(score)
+        level_emoji = quiz_manager.get_user_profile(user_id)['level_emoji']
+        leaderboard_text += f"{i}. {name}: {score} очков {level_emoji} Ур.{level}\n"
     
     # Добавляем общее количество игроков
     all_users = quiz_manager.load_users().get('users', {})
@@ -242,6 +232,85 @@ async def quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка при запуске викторины: {e}")
         print(f"❌ Ошибка quiz: {e}")
 
+async def reset_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Сброс всей статистики (только для админов)"""
+    save_user_info(update)
+    
+    try:
+        # Проверка прав администратора
+        chat_admins = await context.bot.get_chat_administrators(update.effective_chat.id)
+        admin_ids = [admin.user.id for admin in chat_admins]
+        
+        if update.message.from_user.id not in admin_ids:
+            await update.message.reply_text("❌ Эта команда только для администраторов чата!")
+            return
+        
+        # Сбрасываем статистику
+        quiz_manager.reset_all_stats()
+        
+        await update.message.reply_text(
+            "🔄 Вся статистика сброшена! 🎯\n\n"
+            "✅ Таблица лидеров очищена\n"
+            "✅ Все вопросы разблокированы\n" 
+            "✅ Текущий вопрос сброшен\n"
+            "✅ Все достижения сброшены\n"
+            "📊 Теперь все начинают с 0 очков!\n\n"
+            "Запусти новую викторину командой /quiz"
+        )
+        print(f"✅ Статистика сброшена администратором {update.message.from_user.first_name}")
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка при сбросе статистики: {e}")
+        print(f"❌ Ошибка reset_stats: {e}")
+
+async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает профиль пользователя"""
+    save_user_info(update)
+    
+    user = update.message.from_user
+    profile = quiz_manager.get_user_profile(user.id)
+    
+    profile_text = f"""
+👤 ПРОФИЛЬ: {user.first_name}
+
+{profile['level_emoji']} Уровень: {profile['level']} ({profile['level_name']})
+⭐ Очки: {profile['score']}
+🏅 Достижений: {len(profile['achievements'])}
+📈 Прогресс: {profile['progress_percent']}%
+
+🎯 До следующего уровня: {profile['next_level_points'] - profile['score'] if isinstance(profile['next_level_points'], int) else 'максимум'} очков
+    """
+    
+    await update.message.reply_text(profile_text)
+
+async def achievements(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает достижения пользователя"""
+    save_user_info(update)
+    
+    user = update.message.from_user
+    user_achievements = quiz_manager.get_user_achievements(user.id)
+    profile = quiz_manager.get_user_profile(user.id)
+    
+    if not user_achievements:
+        await update.message.reply_text(
+            f"🎯 У тебя пока нет достижений, {user.first_name}!\n"
+            f"🏆 Продолжай участвовать в викторинах чтобы получить свои первые награды!\n\n"
+            f"📊 Твой уровень: {profile['level_emoji']} {profile['level_name']}\n"
+            f"⭐ Очков: {profile['score']}"
+        )
+        return
+    
+    achievements_text = f"🏅 ТВОИ ДОСТИЖЕНИЯ, {user.first_name}:\n\n"
+    
+    for ach_id in user_achievements:
+        ach = quiz_manager.ACHIEVEMENTS[ach_id]
+        achievements_text += f"{ach['icon']} {ach['name']}\n{ach['description']}\n\n"
+    
+    achievements_text += f"📊 Уровень: {profile['level_emoji']} {profile['level_name']}\n"
+    achievements_text += f"⭐ Очков: {profile['score']}\n"
+    achievements_text += f"🎯 До следующего уровня: {profile['next_level_points'] - profile['score'] if isinstance(profile['next_level_points'], int) else 'максимум'} очков"
+    
+    await update.message.reply_text(achievements_text)
 
 async def test_scheduler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Тестовая команда для проверки планировщика"""
@@ -362,6 +431,7 @@ async def scheduled_quiz(context: ContextTypes.DEFAULT_TYPE):
             print(f"❌ Ошибка отправки в чат {chat_id}: {e}")
     
     print(f"✅ Викторина отправлена в {successful_sends} из {len(active_chats)} чатов")
+
 def setup_scheduler(application):
     """Настраивает планировщик для автоматических викторин"""
     try:
@@ -372,7 +442,7 @@ def setup_scheduler(application):
             return
         
         # Время викторин (МСК)
-        quiz_times_msk = ["04:00","08:00","12:00","16:00", "18:00","22:00","00:00"]
+        quiz_times_msk = ["12:00"]
         
         print(f"⏰ Настройка планировщика для времени: {quiz_times_msk}")
         
@@ -429,7 +499,10 @@ def main():
         application.add_handler(CommandHandler("schedule", schedule))
         application.add_handler(CommandHandler("next_quiz", next_quiz))
         application.add_handler(CommandHandler("quiz", quiz))
-        application.add_handler(CommandHandler("test_schedule", test_scheduler))  # ← НОВАЯ КОМАНДА
+        application.add_handler(CommandHandler("reset_stats", reset_stats))
+        application.add_handler(CommandHandler("profile", profile))
+        application.add_handler(CommandHandler("achievements", achievements))
+        application.add_handler(CommandHandler("test_schedule", test_scheduler))
         application.add_handler(CommandHandler("active_chats", active_chats))
         
         # Обработчик сообщений ДОЛЖЕН БЫТЬ ПОСЛЕДНИМ!
@@ -442,8 +515,12 @@ def main():
         
         # Запуск бота
         print("🎯 Бот запускается для опроса...")
-        print("⏰ Викторины будут каждые 4 часа")
+        print("⏰ Викторины будут каждые день в 12:00")
         print("🧪 Для тестирования используйте /test_schedule")
+        print("🔄 Для сброса статистики используйте /reset_stats (админы)")
+        print("🏆 Доступны команды /profile и /achievements")
+        print("🔇 Бот НЕ реагирует на неправильные ответы (убрали спам)")
+        print("🤖 Включено fuzzy-сравнение ответов (80% совпадение)")
         print("Остановите бота комбинацией Ctrl+C")
         
         # Используем run_polling вместо asyncio
